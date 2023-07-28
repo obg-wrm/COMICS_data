@@ -12,4 +12,4 @@ The dataset contains 6 data files:
   5. Acoustic backscatter
   6. Meteorology
 
-The data has been submitted to PANGAEA and will be publicly available. An accompanying paper has been submitted to Nature Scientific Data.
+The data has been submitted to PANGAEA and will be publicly available. An accompanying paper has been submitted to Nature Scientific Data. Both data and paper submission contain a full list of authors that contributed to the data collection effort and/or subsequent scienitific investigation.
