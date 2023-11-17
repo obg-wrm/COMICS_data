@@ -1,0 +1,1649 @@
+---
+title: "COMICS data synthesis"
+author: "Will Major"
+date: "2023-07-27"
+output: github_document
+---
+
+# COMICS data analysis for SUMMER WP4
+
+#### Updates
+11/07/2023 - split data2 into data2_POC_concentration_and_flux and data6_acoustic_backscatter on the recommendation of PANGAEA.
+
+10/11/2023 - changes to bio-optical parameters following a chat with Nathan: Removed deep blank from all bio-optical parameters. This meant I could use and publish data from both Stainless Steel and trace-metal-free CTD frames; I removed beam transmittance and left in attenuation as these are essentially the same thing - attenuation is calculated from transmittance; Also no need to remove 3x SD as this will likely just remove the large particle signal.
+
+13/11/2023 - edit code so that changes made on 10/11/2023 are completed and the files ready for PANGAEA can be updated
+
+
+#### RUN FIRST: Initial setup, package loading and plot style
+```{r setup, include=FALSE}
+# supress warnings
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(fig.width=9, fig.height=4)
+
+# # add RTools to usr PATH
+# old_path <- Sys.getenv("PATH")
+# Sys.setenv(PATH = paste(old_path, "C:\\RTools43\\usr\\bin", sep = ";"))
+# # rm(old_path)
+
+library("pacman")
+pacman::p_load(dplyr, datasets, readxl, NCmisc, stats, graphics, grDevices, caTools, ggpubr, marmap, forcats, stringr, purrr, readr, tidyr, tibble, ggplot2, tidyverse, oce, utils, sf, gsw, testthat, methods, base, ncdf4, dataPreparation, naniar, ggoce)
+
+# library("pacman")
+# pacman::p_load(base, caTools, dataPreparation, datasets, data.table, devtools, dplyr,
+#                forcats,
+#                ggforce, ggplot2, ggtext, ggpubr, glue, graphics, grDevices, gsw, 
+#                marmap, methods,  ncdf4, NCmisc, oce, purrr,
+#                Rcpp, readr, readxl, R.utils,
+#                scales, stats, stringr, testthat, tibble, tidyr, tidyverse, # sf, 
+#                usethis, utils)
+
+# set working directory to the path of this .rmd file (does not always work first time)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+
+
+plot_style <- ggplot() +
+    # my style
+    theme_bw() +
+    theme(plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size=7),
+    legend.title = element_blank(),
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.key.size = unit(0.3, 'cm'),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size=10),
+    axis.line = element_line(color = 'black', linewidth=1.2),
+    axis.ticks = element_line(linewidth=1.2))
+
+t1 <- ggplot() + geom_text(aes(x=0, y=0, label = "a: P3A"),parse = TRUE, size = 4, hjust = 1.5) + theme_void()
+t2 <- ggplot() + geom_text(aes(x=0, y=0, label = "b: P3B"),parse = TRUE, size = 4, hjust = 1.5) + theme_void()
+t3 <- ggplot() + geom_text(aes(x=0, y=0, label = "c: P3C"),parse = TRUE, size = 4, hjust = 1.5) + theme_void()
+
+```
+
+
+## Data1 and Data3: (1) CTD and (3) POC discrete data
+
+### BODC CTD data
+CTD data is provided by BODC. Import data and remove unwanted CTDs including test and casts not made at P3. I then remove unnecessary variables such as channels, pressure, volume to mass, and potential temperature. I calculated depth from sigma and pressure. I made plots for SigmaT, Temperature, Salinity, O2, O2sat and Chl-a. I then made a TS plot based on site showing that physical parameters remain consistent throughout the three visits, with temperature-driven density changes in the surface only.
+```{r BODC CTD data: import and arrange}
+file_list <- dir("./data/COMICS_DY086/")[grep(".csv", dir("./data/COMICS_DY086/"))]
+df <- vector()
+counter <- 0
+y_new <- c(1, 11:14, 25)
+
+cols <- c("Station", "yyyy.mm.ddThh.mm.ss", "Longitude..degrees_east.", "Latitude..degrees_north.")
+
+for (i in file_list) {
+  counter <- counter + 1
+  if (any(y_new == counter)) {next} # removes profiles that are not from P3
+  else {
+    
+    file <- file.path("./data/COMICS_DY086/", i)
+    out_df <- read.csv(file, skip = 18, header = T)
+    out_df <- out_df %>% replace_with_na(replace = list(Station = ""))
+    out_df <- out_df %>% replace_with_na(replace = list(`yyyy.mm.ddThh.mm.ss` = ""))
+    out_df <- out_df %>% replace_with_na(replace = list(`Longitude..degrees_east.` = ""))
+    out_df <- out_df %>% replace_with_na(replace = list(`Latitude..degrees_north.` = ""))
+    for (j in cols) {
+      out_df <- fill(out_df, all_of(j), .direction="down")
+    }
+    if (any(c(2:10) == counter)) {out_df$Site = "P3A"}
+    if (any(c(15:24) == counter)) {out_df$Site = "P3B"}
+    if (any(c(26:33) == counter)) {out_df$Site = "P3C"}
+    df <- rbind(df, out_df)
+  }
+}
+
+df <- df[, c(2, 4, 5, 6, 30, 10, 14, 16, 18, 20, 22, 24, 26, 28),]
+colnames(df) <- c("Event", "DateTime", "Longitude (°E)", "Latitude (°N)", "Site", "Pressure (db)", "Chl-a (mg m-3)", 
+                  "O2 (μmol L)", "O2sat (%)", "Potential Temp (degC)", "Salinity (PSU)", 
+                  "SigTheta (kg m-3)", "Temperature (degC)", "Vol2Mass1kg")
+
+df$Density <- ((df$`SigTheta (kg m-3)` / 1000) + 1)*1000
+df$`Pressure (hPa)` <- df$`Pressure (db)`*100
+df$Depth <- df$`Pressure (hPa)`*10^2 / (df$Density * 9.80665)
+df$Depth <- round(df$Depth)
+df <- df[, c(5, 1, 2, 3, 4, 17, 6, 13, 11, 15, 12, 8, 9, 7),]
+df <- subset(df, Depth <= 1000)
+
+data1 <- df[order(df[,2], df[,6]),] # save raw discrete data in order of Site and Depth
+
+### a section that adds depth every metre
+y_new <- data.frame(Depth = seq(1,1000,1)) # create new depth column
+# data_split <- split(data1, data1$Event)
+cols <- c("Event", "Longitude (°E)", "Latitude (°N)", "Site", "DateTime")
+events <- unique(data1$Event)
+df <- vector()
+for (i in events) {
+ out_df <- filter(data1, Event==i)
+ out_df <- merge(out_df, y_new, by=c("Depth"), all=T)
+ out_df <- fill(out_df, all_of(cols), .direction="down")
+ out_df <- fill(out_df, all_of(cols), .direction="up")
+ df <- rbind(df, out_df)
+}
+
+data1 <- df
+
+# cleanup
+rm(df,out_df,y_new,cols,file,file_list,i,j,counter,events)
+
+```
+
+#### TS plot
+An initial look at the water masses.
+```{r TS plot for BODC data}
+sites <- c("P3A","P3B","P3C")
+counter <- 0
+plot <- list()
+x_new <- c(33.75, 34.75)
+y_new <- c(0.5, 4)
+
+for (i in sites) {
+  counter <- counter+1
+  df <- filter(data1, Site==i)
+  df <- na.omit(df)
+  df$Event<-substring(df$Event,11,13)
+  df<-df[order(df$Depth),]
+
+  pl <- plot_style +
+    
+    labs(x="Salinity (PSU)",y="Temperature (°C)",colour="Event") +
+
+    geom_isopycnal(data=df, aes(x=`Salinity (PSU)`, 
+                   y=oce::swTheta(`Salinity (PSU)`,`Temperature (degC)`,`Pressure (db)`)),
+                   size=0.4,linetype = 1,text.size = 3, linemitre = 10,n_breaks = 5) +
+    geom_path(data=df, aes(x=`Salinity (PSU)`, 
+                   y=oce::swTheta(`Salinity (PSU)`,`Temperature (degC)`,`Pressure (db)`),
+                   colour=Event), size=1) +
+    scale_x_continuous(limits=x_new) +
+    scale_y_continuous(limits=y_new)
+    
+  plot[[counter]] <- pl
+
+}
+
+
+plot_ts <- ggarrange(t1,t2,t3,plot[[1]],plot[[2]],plot[[3]],
+                     ncol=3, nrow=2, common.legend=F,
+                     heights=c(0.05,0.95))
+plot_ts
+
+ggsave("plots/20230523_ts-plots.tiff", units="in", width=6, height=3, dpi=300, compression = 'lzw')
+
+rm(pl,plot,df,x_new,y_new,i,sites,counter,plot_ts)
+```
+
+
+
+### raw CTD data
+Here I seek to include raw PAR and particle parameters with the data from BODC. Of the 33 profiles, 6 were not P3 profiles. Of the remaining 27, 24 were labelled as raw_cleaned; I took all available raw_cleaned profiles and included 'raw' versions of the 3 that did not have a 'cleaned' version. In the next chunk I import the data, and following that I plot to look for inconsistencies. Upcast data is removed on data import to RStudio.
+
+Raw COMICS I data is available on NOC servers (SAMBA/noc/obe/cruises/data). BODC data did not have PAR data nor particle variables. Particle parameters (turbidity, transmission and attenuation) display inconsistencies in CTD profiles 7, 15, 19, 24, 26 and 29. There is no evidence in a change in water mass during these profiles; biofouling could be a cause of the inconsistencies seen in these profiles.
+
+I will use all available BODC data and attempt to clean the raw data for parameters that BODC have not included. Parameters BODC did not include: PAR, turbidity, attenuation and fluorescence. 
+This section of code creates profiles for all variables at each of the site visits (P3A, P3B and P3C) and at every stage of data cleaning. 
+Run this code and type in the console plot_init[[iteration number]][[site number]]. The number of iterations is stated by the variable 'iterations'. Site number can be 1,2 and 3 respectively for P3A, B and C. Iteration=1 is raw data; 2 removes suspicious profiles; 3 removes 3*SD; 4 removes up to the last point where the rosette is at 5 metres depth for particle parameters (not PAR).
+
+```{r raw CTD data: import, arrange, clean and plot}
+file_list <- dir("./data/ctd_nc/")[grep(".nc", dir("./data/ctd_nc/"))]
+
+variables <- c("depSM","PAR", "PAR1","turbidity","attenuation")
+library(data.table)
+
+
+df <- vector()
+units <-vector()
+counter <- 0
+ctd_omit <- c(1, 11:14, 25)
+
+for (i in c(1:33)) {
+  counter <- counter + 1
+
+  if (exists("out_df") == T) {rm(out_df)} # delete out_df on each iteration
+  if (any(ctd_omit == counter)) {next} # skip non P3 profiles
+  else {
+    ncf <- file.path("./data/ctd_nc", file_list[i])
+    ncin <- nc_open(ncf) # open netCDF4
+
+    for (j in variables) {
+      if (i == 2) { # saving units from second iteration works because I know all variables are present in CTD002
+        u <- ncin[["var"]][[j]][["units"]]
+        units <- append(units, u)}
+      
+      if (j %in% names(ncin[["var"]]) == F) {x <- NA} # accounting for missing PAR values in 4,15,19,24,25,26
+      else {x <- ncvar_get(ncin, j)}
+      
+      if (j == variables[1]) {out_df <- x} # first iteration copies x to out_df
+      else {out_df <- cbind(out_df, x)} # all others join to the first
+    }
+    out_df <- data.frame(out_df)
+    out_df<-out_df[-c(1,3:7,10,15:17),]
+    colnames(out_df) <- variables
+    
+    # remove upcast data from each profile
+    rm<-max(out_df$depSM) # max depth
+    rn<-which(out_df$depSM == rm, arr.ind=TRUE) # max depth row number
+    rt<-nrow(out_df) # total rows
+    out_df <- out_df[-(rn[1]:rt),]
+    out_df <- subset(out_df, depSM > 0)
+    
+    # include metadata / site information
+    out_df$Event <- paste0("DY086_CTD", str_pad(i, 3, pad = "0")) # add event
+    if (any(c(2:10) == counter)) {out_df$Site = "P3A"}
+    if (any(c(15:24) == counter)) {out_df$Site = "P3B"}
+    if (any(c(26:33) == counter)) {out_df$Site = "P3C"}
+    out_df$id <- seq.int(nrow(out_df))
+    out_df$Depth <- round(out_df$depSM)
+    
+    x<-seq(5,995,10)
+    dt = data.table(x, val=x)
+    setkey(dt,x)
+    dt<-dt[J(out_df$depSM), roll="nearest"]
+    out_df$Depth_bin<-dt$val
+
+    df <- rbind(df, out_df)
+  }
+}
+
+df <- subset(df, Depth > 0)
+
+# clean-up
+rm(out_df,ncin,ctd_omit,file_list,i,j,ncf,rm,rn,rt,units,u,counter,variables,x)
+
+
+### data cleaning
+cols <- c("PAR","PAR1","turbidity","attenuation")
+cols2 <- "attenuation"
+sites <- c("P3A","P3B","P3C")
+
+df <- subset(df, Depth > 0)
+
+# arrange the dataframe to ensure geom_path works correctly when making the figures
+df <- arrange(df, Event, depSM)
+
+pl_counter<-0
+counter_raw <- 0
+counter_e<-0
+iterations <- c(1:3)
+plot_raw <- list()
+ctd_omit <- c(1, 11:14, 25)
+events <- unique(df$Event)
+new_df <- vector()
+
+for (k in iterations) {
+  counter<-0
+  pl_counter <- pl_counter + 1
+  
+  if (k==1) {
+    df_split <- split(df, df$Site)
+  }
+  else {
+    # remove top 5 metres (and dip) from all parameters except PAR
+    # and remove CTD004 from Turbidity as it is invalid
+    if (k==2){
+      df$turbidity[df$Event == "DY086_CTD004"] <- NA
+      for (e in c(1:33)) {
+        counter_e<-counter_e+1
+        # skip non P3 profiles - they have already been removed - command relevant for c(1:33) for loop command only
+        if (any(ctd_omit == counter_e)) {next} 
+        # cut from above the final 5 metre point
+        # must have removed upcast first
+        else {  
+          n <- paste0("DY086_CTD", str_pad(e, 3, pad = "0"))
+          df_sub <- subset(df, Event==n)          
+          df_sub$Depth_r <- round(df_sub$depSM, digits = 1) # round to 1 decimal place
+          df_sub$Depth_bin <- round(df_sub$Depth_r/5)*5
+          df_trim <- subset(df_sub, Depth_r == 5.0)
+          trim <- max(df_trim$id)
+          if (trim==-Inf) {
+            df_trim <- subset(df_sub, Depth_bin == 5)
+            trim<-max(df_trim$id)}
+          # use depth bin if depth to 1 decimal place doesn't work
+
+          for (v in cols2) {
+            df[[v]][df$Event==n & df$id <= trim] <- NA
+          }
+        }
+        df_split <- split(df, df$Site)
+      }
+      
+    }
+    
+    # subtract deep blank
+    if (k==3) {
+      for (i in events) { # calculate deep blanks
+        sub <- filter(df, Event==i)
+        mxd <- max(sub$Depth)
+        if (mxd > 1000) {mxd <- 1000}
+        mxd100 <- mxd - 100
+        sub2 <- filter(sub, Depth > mxd100)
+        sub3 <- aggregate(sub2, by=list(sub2$Event), FUN=min, na.rm=T)
+        for (o in cols2) { # subtract deep blank from each column
+          x <- sub3[[o]]
+          sub[[o]] <- sub[[o]] - x
+          if (mxd < 600) {sub[[o]] <- NA}
+        }
+        new_df <- rbind(new_df,sub) # bind each event df (sub) into new_df
+      }
+      df <- new_df
+      df_split <- split(df, df$Site)  
+    }
+  }
+
+  
+  for (j in cols) {
+    for (i in sites) {
+      counter<-counter+1
+      counter_raw<-counter_raw+1
+
+      # subset variable- and site-specific data
+      sub <- df_split[[i]]
+      sub$x <- sub[,j]
+      sub <- subset(sub, !is.na(x))
+      sub$z <- sub$depSM
+      
+      # find x axis minimum and maximum
+      mi <- as.numeric(min(sub$x))
+      ma <- as.numeric(max(sub$x))
+
+      # plot profiles for each variable at each site
+      if (j=="PAR" | j=="PAR1") {
+            pl <- plot_style +
+              
+              geom_path(data=sub,aes(x=x, y=z, colour=Event), size = 0.6) +
+              scale_y_reverse(expand = c(0,0), limits = c(100, 0)) +
+              labs(x=j,y=expression(paste("Depth (m)"))) +
+              scale_x_continuous(position = "top",limits=c(mi,ma))
+            
+      }
+      else {
+        if (j=="attenuation") {
+          lab <- "Attenuation (m^-1)"
+        }
+        else {lab <- j}
+        
+        pl <- plot_style +
+  
+          geom_path(data=sub,aes(x=x, y=z, colour=Event), size = 0.6) +
+          scale_y_reverse(expand = c(0,0), limits = c(1000, 0)) +
+          labs(x=lab,y=expression(paste("Depth (m)"))) +
+          scale_x_continuous(position = "top",limits=c(mi,ma))
+      }
+      plot_raw[[counter_raw]] <- pl
+      
+      if (j=="attenuation") {
+        print(pl)
+      }
+    }
+  }
+}
+
+# clean-up
+rm(df_split,pl,sub,cols,counter,counter_raw,i,iterations,
+   j,k,ma,mi,o,pl_counter,sites,x,df_sub,df_trim,counter_e,ctd_omit,e,n,trim,v,
+   sub2,sub3,cols2,lab,
+   mxd,mxd100,events)
+
+
+```
+
+#### create plots for raw CTD data and different levels of clean
+``` {r create ctd plots}
+knitr::opts_chunk$set(fig.width=9, fig.height=4)
+plot_levels <- list()
+counter <- 0
+df <- subset(df, Depth <= 1000)
+
+for (i in c(1:12)) {
+  counter<-counter+1
+  if (any(c(1,4,7,10)==counter)) {site="P3A"}
+  if (any(c(2,5,8,11)==counter)) {site="P3B"}
+  if (any(c(3,6,9,12)==counter)) {site="P3C"}
+
+  a <- i
+  b <- i+12
+  c <- i+24
+  e <- site
+
+  plot_level <-
+    ggarrange(plot_raw[[a]],plot_raw[[b]],plot_raw[[c]],
+    labels=c("a: L1","b: L2","c: L3"),
+    ncol=3, nrow=1, common.legend=T, legend = "bottom")
+  
+  plot_levels[[counter]] <- plot_level
+
+}
+
+# create figure for demonstrating levels of processing for data paper
+plot_level1 <- ggarrange(NULL,NULL,NULL,plot_raw[[10]],plot_raw[[22]],plot_raw[[34]],
+                         labels=c("a: L1","b: L2","c: L3", "", "", ""),
+                         ncol=3, nrow=2, common.legend=T, legend = "bottom",
+                         heights=c(0.1,1))
+
+plot_level1
+
+ggsave("plots/20231024_attenuation-levels_P3A.tiff", units="in", width=6, height=3, dpi=300, compression = 'lzw')
+
+
+# clean-up
+rm(a,b,c,e,i,site,counter)
+```
+
+#### bin data and merge with BODC 
+```{r}
+# drop unnecessary dataframe columns and merge with BODC data
+df<-df[-c(1,7,8,10)]
+df<-aggregate(cbind(PAR, PAR1, turbidity, attenuation) ~ Depth + Event, 
+              data=df, FUN=mean, na.action=na.pass)
+colnames(df)<-c("Depth","Event","PAR (m^-2 s^-1)","PAR1 (m^-2 s^-1)","Turbidity (m^-1 sr^-1)","Attenuation (m^-1)")
+
+if ("turbidity" %in% colnames(data1) == F) {
+  data1 <- merge(data1, df, by=c("Event", "Depth"), all=T)
+}
+
+data1$Duplicates<- c(FALSE, diff(data1$Depth) == 0)
+
+```
+
+
+### Turbulence
+Turbulence data taken from Louis Clement at NOC who provided it in NCDF4 file format. The data is simply transposed into a data frame and added later to the rest of the raw data in m^2/s. Steps on calculating turbulence from correspondance with Louis are included herein
+```{r Turbulence}
+# •	Measure the internal waves signals through the shear (vertical derivatives of velocity) and the strain (a measure of the vertical displacements of isopycnals)
+# •	Calculate a vertical wavenumber spectra for the shear and strain
+# •	Integrate these spectra within two different wavelength ranges of several hundred metres, which are related to the internal wave signal
+# •	Parameterize the dissipation rate of turbulent kinetic energy, \epsilon in [W/kg], from these integrated spectra
+# •	Infer the diapycnal diffusivity, \kappa in [m^2/s].
+file_path <- "./data/ClementL_Turbulence"
+file_list <- Sys.glob(file.path(file_path, "*.nc"))
+nums <- c("02", "03", "05", "06", "08", "10", "16", "17", "21", "23", "27", "30", "31", "33")
+counter <- 0
+turbulence1 <- vector()
+turbulence2 <- vector()
+
+for (j in 1:length(file_list)) {
+  counter <- counter + 1
+  fn <- file_list[j]
+  ncf <- paste(fn, sep="")
+  ncin <- nc_open(ncf)
+
+  for (i in nums) {
+    id <- str_remove(i, "^0+")
+    d <- paste0("depth", id)
+    e <- paste0("eps", id)
+    k <- paste0("kappa", id)
+    
+    event <- paste0("DY086_CTD0", i)
+    depth <- ncvar_get(ncin, d)    
+    eps <- ncvar_get(ncin, e)    
+    kappa <- ncvar_get(ncin, k)
+    out_df <- data.frame(event,depth,eps,kappa)
+    
+    if (j==1) {turbulence1 <- rbind(turbulence1, out_df)}
+    if (j==2) {turbulence2 <- rbind(turbulence2, out_df)}
+  }
+}
+
+turbulence <- merge(turbulence1, turbulence2, by=c("event","depth"), all=T)
+
+colnames(turbulence) <- c("Event", "Depth", "Dissipation1 [W/kg]", "Diffusivity1 [m^2/s]","Dissipation2 [W/kg]","Diffusivity2 [m^2/s]")
+turbulence <- subset(turbulence, Depth <=1000)
+
+
+if ("Dissipation1 [W/kg]" %in% colnames(data1) == F) {
+  data1 <- merge(data1, turbulence, by=c("Event", "Depth"), all=T)
+}
+
+# clean-up
+rm(ncin,out_df,turbulence,turbulence1,turbulence2,counter,d,depth,e,eps,event,file_list,file_path,fn,i,id,j,k,kappa,ncf,nums)
+
+```
+
+
+### DOC concentration data
+From Elisa: “I’m attaching also the excel file with the entire CTD22 which extends below 1000 m depth. The red column are the target depths, the blue column are the actual depths at which the bottle was fired that I calculated from pressure. As you can see, there was another DOC profile available (CTD33), but we couldn’t understand why the data had some large fluctuations that did not match any previously observed profile from the region, so it has not been included in the paper and I’m not sure it should be published, as there may have been some issues with the bottle numbers for what I understood.”
+```{r DOC}
+df <- read_excel('./data/DOC_LovecchioE/DY086_DOC.xlsx', 2)
+colnames(df) <- c("Event", "Depth", "DOC (µmol L^-1)")
+df$Depth <- round(df$Depth)
+df <- subset(df, Depth <=1000)
+df1 <- data.frame(Event="DY086_CTD022",Depth=100,`DOC flux (mg C m^-2 d^-1)`=0.32)
+
+df<-merge(df,df1,by=c("Event","Depth"),all=T)
+colnames(df) <- c("Event", "Depth", "DOC (µmol L^-1)","DOC flux (mg C m-2 day-1)")
+
+if ("DOC (µmol/L)" %in% colnames(data1) == F) {
+  data1 <- merge(data1, df, by=c("Event", "Depth"), all=T)
+}
+
+rm(df1)
+```
+
+
+### Leucine assimilation and prokaryotic production data
+Data remains unchanged from what was shared with me by Rachel Rayne. I merged the data with the rest.
+```{r Leucine}
+df <- read_excel('./data/RayneR_Prokaryotic/DY086_Will.xlsx',1)
+df$Event <- paste0("DY086_CTD", str_pad(df$CTD, 3, pad = "0"))
+df<-df[-c(1,2,4,5,6,7,8,9,10,11,12,13)] # remove unnecessary columns
+colnames(df) <- c("Event","Depth","Ambient Leucine Assimilation / pmol L-1 h-1","Error Ambient Leucine Assimilation / pmol L-1 h-1","Bacterial cell count / cells ml-1")
+
+
+if ("Ambient Leucine Assimilation / pmol L-1 h-1" %in% colnames(data1) == F) {
+  data1 <- merge(data1, df, by=c("Event", "Depth"), all=T)
+}
+
+
+```
+
+### Primary productivity data from Alex Poulton.
+I removed: profiles that were not from P3; data that was not NPP. I then merged with all other data.
+```{r Primary productivity}
+df <- read_excel('./data/PoultonA_Chl_NPP/BODC_DY086_Rate_data_Poulton.xlsx',1)
+df$Event <- paste0("DY086_CTD", str_pad(df$`CTD #`, 3, pad = "0"))
+
+df<-df[,c(24,6,14),]
+colnames(df) <- c("Event", "Depth", "NPP [mmol C m-3 d-1]")
+df[df == "NaN"] <- NA
+df[3]<-as.numeric(as.character(unlist(df[[3]])))
+
+if ("NPP [mmol C m-3 d-1]" %in% colnames(data1) == F) {
+  data1 <- merge(data1, df, by=c("Event", "Depth"), all=T)
+}
+
+rm(df)
+
+```
+
+
+### Data3: POC data
+Take POC bottles from the file from Sari to include in the CTD data, then save all other POC data as a separate file.
+```{r bottle POC and data3}
+# this file contains all data that was used for POC concentrations and fluxes
+## including POC bottle data which should be with the CTD data.
+df<-read.csv("data/Sari_POC_data/2023-06-01_POC_concentrations_and_fluxes.csv")
+
+df_split<-split(df,df$Parameter)
+df_list <- list()
+
+for (i in c(1:4)) {df_list[[i]]<-df_split[[i]]}
+
+data3<-Reduce(function(x, y) merge(x, y, by=c("Datetime","Site","Depth","Gear"),all=TRUE), df_list)
+data3<-subset(data3, Site=="P3A" | Site=="P3B" | Site=="P3C")
+data3$`Longitude (°E)` <- -40.1
+data3$`Latitude (°N)` <- -52.4
+data3<-data3[,c(17,18,1,2,3,4,7,10,13,16),]
+colnames(data3)<-c("Longitude (°E)","Latitude (°N)",
+                   "Datetime","Site","Depth (m)","Gear","POC (mg C m^-3)",
+                   "POC Flux Fast (mg C m^-2 d^-1)","POC Flux Slow (mg C m^-2 d^-1)",
+                   "POC Flux Total (mg C m^-2 d^-1)")
+
+data3$Depth <- round(data3$Depth*-1)
+
+# use DateTime to get CTD Event with the POC bottle data
+test1<-data.frame(Event=unique(data1$Event), DateTime=unique(data1$DateTime))
+test1$mdh<-paste0(substring(test1$DateTime,6,7), substring(test1$DateTime,9,10), substring(test1$DateTime,12,13))
+test2<-subset(data3,Gear=="CTD")
+test2$mdh<-paste0(substring(test2$Datetime,6,7), substring(test2$Datetime,9,10), substring(test2$Datetime,12,13))
+a<-as.numeric(test2$mdh)
+b<-as.numeric(test1$mdh)
+test2$closest<-b[max.col(-abs(outer(a,b,"-")))]
+test2$mdh <- as.numeric(test2$mdh)
+test2$diff<- test2$closest - test2$mdh
+test2$mdh <- test2$closest
+test3<-merge(test2,test1,by=("mdh"))
+test3<-test3[,c(6,8,14,15)]
+test3[2] <- test3[2] /12 # convert to umol L^-1
+test3[1] <- test3[1] *-1 # make depth positive
+test3[1] <- round(test3[1])
+
+df2<-test3[,c(1,2,4)]
+
+# I now have CTD bottle POC in file df2.
+## time to subset data3 so that CTD data is not included and save
+data3<-subset(data3,Gear!="CTD")
+
+data3$Gear[data3$Gear=="MSC"] <- "Marine snow catcher"
+data3$Gear[data3$Gear=="SAPS"] <- "Stand-alone Pump System"
+data3$Gear[data3$Gear=="PELAGRA"] <- "Particle Export measurement using a LAGRAngian trap"
+
+write.table(data3, 
+            file = "./for_pangaea/data3_POC_discrete.txt", 
+            row.names = F, 
+            col.names = T, 
+            quote = F, 
+            sep = '\t')
+
+# clean-up
+rm(df,df_split,df_list,i,test1,test2,test3,a,b)
+
+```
+
+### Nutrient data
+Nutrient data for COMICS I was downloaded from BODC. I firstly load in the nutrient data and remove any Bot_Flag values that are not '0' (indicating no issues) along with any data that is not from relevant sites P3A, P3B and P3C. I then renamed some of the columns and removed columns that were not relevant to the final dataset (e.g. cruise number and bottle number), keeping Site, Depth, Pressure and nutrient data (nitrate, phosphate. silicate). I need to go back to BODC to get DO and PAR data. I removed profile that was erroneously laballed as P3C despite showing a completely opposing trend in nitrate, phosphate and silicate. I then removed one single outlier from Phosphate values.
+```{r Nutrient data import}
+df <- read.csv('./data/BODC_nutrients/DY086_nutrients.csv')
+df <- df[df$Bot_Flag == 0,]
+df <- df[c(3,10,11,12,18,20,22)]
+sites <- c("P3A","P3B","P3C")
+
+counter <- 0
+cols <- c("Event", "Site", "Depth", "Pressure (db)", "Nitrate (μmol/L)", "Phosphate (μmol/L)", "Silicate (μmol/L)")
+for (i in cols) {
+  counter <- counter + 1
+  names(df)[counter] <- (i)
+}
+
+df <- subset(df, Site == 'P3A' | Site == 'P3B' | Site == 'P3C') # remove data that is not from P3
+df <- df[-c(221:242), ] # remove incorrect data
+df[6][df[3]<100&df[6]>2.3] <- NA # remove outlier in phosphate data
+df$Event <- sapply(df$Event, function(x){paste("DY086_", x, sep="")}) # add DY086_ before Event number
+
+# replace bottle firing depth with nearest ctd measurement depth
+# df <- subset(df, Depth < 1010)
+df_split <- split(df, df$Site)
+data_split <- split(data1, data1$Site)
+df <- vector()
+for (i in sites) {
+  y_new <- unique(data_split[[i]][["Pressure (db)"]])
+  out_df <- df_split[[i]][["Pressure (db)"]]
+  out_df <- sapply(out_df, function(x){which.min(abs(y_new - x))})
+  vals <- vector()
+  for (j in out_df){
+    v <- y_new[j]
+    vals <- rbind(vals, v)
+  }
+  vals <- as.data.frame(vals)
+  out_df <- df_split[[i]]
+  out_df$Pressure2 <- out_df$`Pressure (db)`
+  out_df$`Pressure (db)` <- vals$V1
+  df <- rbind(df, out_df)
+} 
+
+colnames(df) <- c("Event", "Site", "Depth", "Pressure (db)", "Nitrate (μmol/L)", "Phosphate (μmol/L)", "Silicate (μmol/L)", "Pressure2")
+df <- subset(df, Depth <= 1000)
+df <- subset(df, select=-c(Depth, Pressure2))
+
+df<-df[order(df$Event,df$`Pressure (db)`), ]
+# highlight duplicate bottles with boolean
+df$Duplicates<- c(FALSE, diff(df$`Pressure (db)`) == 0)
+
+# clean-up
+rm(data_split,df_split,out_df,vals,cols,counter,i,j,sites,v,y_new)
+
+```
+
+```{r correct POC bottle data with pressure values from nutrient data}
+events<-unique(df$Event)
+events2<-unique(df2$Event)
+df_split<-split(df,df$Event)
+df2_split<-split(df2,df2$Event)
+
+# find events where nutrient and POC bottle data exist
+matched<-match(events,events2)
+counter<-0
+
+# empty vector to rejoin data
+out_df<-vector()
+
+for (i in events2) {
+  counter<-counter+1
+  if (counter %in% matched) {
+    # split the two dataframes by events present in both dataframes (POC bottle data)
+    one<-df_split[[i]]
+    two<-df2_split[[i]]
+
+    # list depth / pressure values from each split dataframe
+    a<-as.numeric(two$Depth)
+    b<-as.numeric(one$`Pressure (db)`)
+    
+    # find the closest pressure for each POC depth value
+    two$closest<-b[max.col(-abs(outer(a,b,"-")))]
+    two$diff<- two$closest - two$Depth
+    two$`Pressure (db)` <- two$closest
+    # three<-merge(two,one,by="Pressure (db)")
+    out_df<-rbind(out_df, two)
+    
+  }
+}
+
+# clean-up
+rm(one,two,a,b,counter,i,events,events2,matched,df_split,df2_split)
+
+out_df<-subset(out_df, (diff > -10))
+out_df<-out_df[,c(1:3,6)]
+
+# compile dataframe with ALL POC bottle data + pressure column
+out_df<-merge(df2,out_df,by=c("Event","Depth (m)","POC (mg C m^-3)"),all=T)
+out_df<-subset(out_df,`Depth (m)`<=1000)
+
+out_df$Duplicates<- c(FALSE, diff(out_df$`Pressure (db)`) == 0)
+
+df<-left_join(df,out_df,by=c("Event","Pressure (db)", "Duplicates"))
+df<-df[,-c(2,8),]
+
+
+if ("POC (mg C m^-3)" %in% colnames(data1) == F) {
+  data1 <- merge(data1, df, by=c("Event", "Pressure (db)"), all=T)
+}
+
+data1<-fill(data1, Depth, Site, DateTime, `Longitude (°E)`, `Latitude (°N)`, .direction = "down")
+# data1<-data1[,-3,]
+
+# # subset POC bottle data that does not have pressure values
+# df<-subset(out_df,is.na(`Pressure (db)`))
+# df<-df[,c(1:3),]
+# colnames(df)[2] <- "Depth"
+# data1<-merge(data1,df,by=c("Event","Depth"),all=T)
+# data1$`POC (mg C m^-3)` <- coalesce(data1$`POC (mg C m^-3).x`,data1$`POC (mg C m^-3).y`)
+# data1 <- data1[,-c(34:37)]
+# rm(out_df,df,df2)
+
+```
+
+
+
+### Tidy Data1
+Organise the data to match paper and export as .txt file.
+```{r tidy}
+data1<-data1[, c(1,6,7,5,4,3,8,9,11,12,13,15,16,17,18,
+                 c(30:32),34,c(20:23),14,29,24,25,26,28 # 
+                 ),]
+
+colnames(data1)<- c("Event","Longitude (°E)","Latitude (°N)","DateTime","Site","Depth (m)","Temperature (degC)",
+                    "Salinity (PSU)","SigTheta (kg/m3)","O2 (µmol/L)","O2sat (%)","PAR (m^2/s)",
+                    "PAR1 (m^2/s)","Turbidity (m/sr)","Attenuation (1/m)",
+                    "Nitrate (µmol/L)","Phosphate (µmol/L)","Silicate (µmol/L)","POC (µmol/L)",
+                    "Dissipation1 (W/kg)","Diffusivity1 (m^2/s)","Dissipation2 (W/kg)","Diffusivity2 (m^2/s)",
+                    "Chl-a (mg/m^3)","NPP (mmol C m^3/d)","DOC (µmol/L)","DOC flux (mg C m^2/d)",
+                    "Ambient Leucine Assimilation (pmol/L/h)","Bacterial cell count (cells mL/1)")
+
+
+# write data1 to text file for upload to pangaea
+write.table(data1, 
+            file = "./for_pangaea/data1_ctd.txt", 
+            row.names = F, 
+            col.names = T, 
+            quote = F, 
+            sep = '\t')
+
+# save data1 and data3 environment
+save.image(file='20230612_COMICS_data1_and_data3.RData')
+
+# I used this to count number of profiles for each parameter.
+# c<-aggregate(cbind(
+#   data1$`Temperature (degC)`,
+#   data1$`Salinity (PSU)`,
+#   data1$`SigTheta (kg m^-3)`,
+#   data1$`O2 (µmol L^-1)`,
+#   data1$`O2sat (%)`,
+#   data1$`PAR (Biospherical/Licor)`,
+#   data1$`PAR1 (Biospherical/Licor)`,
+#   data1$`Turbidity (NTU)`,
+#   data1$`Transmittance (%)`,
+#   data1$`Attenuation (1/m)`,
+#   data1$`Fluorescence (µg L^-1)`,
+#   data1$`Nitrate (µmol L^-1)`,
+#   data1$`Phosphate (µmol L^-1)`,
+#   data1$`Silicate (µmol L^-1)`,
+#   data1$`POC (µmol L^-1)`,
+#   data1$`Dissipation1 (W kg^-1)`,
+#   data1$`Diffusivity1 (m^-2 s^-1)`,
+#   data1$`Dissipation2 (W kg^-1)`,
+#   data1$`Diffusivity2 (m^-2 s^-1)`,
+#   data1$`Chl-a (mg m^-3)`,
+#   data1$`NPP (mmol C m^-3 d^-1)`,
+#   data1$`DOC (µmol L^-1)`,
+#   data1$`DOC flux (mg C m^-2 d^-1)`,
+#   data1$`Ambient Leucine Assimilation (pmol L^-1 h^-1)`,
+#   data1$`Bacterial cell count (cells mL^-1)`), 
+#   by=list(data1$Event),na.rm=T,FUN=mean)
+# 
+
+
+```
+
+
+### Data1 plots
+Plot all parameters to check final data1 data. Here I do not plot: DOC Flux as we only have one value; DOC as there is only one profile; Error in ambient Leucine Assimilation data.
+```{r data1 plots, fig.align = "center"}
+knitr::opts_chunk$set(fig.width=9, fig.height=4)
+variables <- colnames(data1[7:30])
+sites <- c("P3A","P3B","P3C")
+
+for (j in variables) {
+  if (j=="DOC flux (mg C m^-2 d^-1)" | j=="DOC (µmol L^-1)") {next}
+  mi <- min(na.omit(data1[[j]]))
+  ma <- max(na.omit(data1[[j]]))
+  counter<-0
+  plot_v<-list()
+  for (i in sites) {
+    counter <- counter+1
+    sub <- subset(data1, Site == i)
+    sub$x <- sub[[j]]
+    sub <- sub[!is.na(sub$x), ]
+    sub$Event<-substring(sub$Event,11,13)
+    sub<-sub[order(sub$`Depth (m)`),]
+    
+    if (j=="PAR (Biospherical/Licor)" | j=="PAR1 (Biospherical/Licor)") {
+      pl <- plot_style +
+        geom_path(data=sub,aes(x=x, y=`Depth (m)`, colour=Event), size = 1.2) +
+        scale_y_reverse(expand = c(0,0), limits = c(100, 0)) +
+        labs(x=j,y=expression(paste("Depth (m)"))) +
+        scale_x_continuous(position = "top",limits=c(mi,ma))
+    }
+    
+    else {
+      pl <- plot_style +
+        geom_path(data=sub,aes(x=x, y=`Depth (m)`, colour=Event), size = 1.2) +
+        scale_y_reverse(expand = c(0,0), limits = c(1000, 0)) +
+        labs(x=j,y=expression(paste("Depth (m)"))) +
+        scale_x_continuous(position = "top",limits=c(mi,ma))
+    }
+    
+    plot_v[[counter]] <- pl
+    
+  }
+  plot<-ggarrange(t1,t2,t3,plot_v[[1]],plot_v[[2]],plot_v[[3]],
+                  heights=c(0.05,0.95),ncol=3, nrow=2,
+                  common.legend=F)
+  
+  print(plot)
+  
+  if (j=="Chl-a (mg m-3)") {
+    ggsave("plots/20230526_Chl-a.tiff", units="in", width=6, height=3, dpi=300, compression = 'lzw')
+  }
+  
+}
+
+# clean-up
+rm(sub,pl,plot,plot_v,counter,i,j,ma,mi,sites,variables,df1)
+
+```
+
+
+
+
+
+## Data2 and Data5: (2) High-resolution POC and (5) acoustic backscatter data
+
+### POC concentration, flux and change data
+This first section of code loads the POC data provided by Sari which was provided in the correct format. The Depth was given in negative numbers which I reversed. I then rearranged the data by Site and Depth. I then remove unnecessary columns Gear and Depth_bins (Depth and Depth_bins were the same). All POC data after Giering et al. (2023).
+```{r POC concentrations, fluxes and change: import and arrange}
+# import POC concentration data from .csv file and tidy
+df <- read.csv('./data/Sari_POC_data/2022-10-03_Stocks_site_mean_v5.csv')
+df2<- read_excel('./data/Sari_POC_data/2020-10-26_Synthesis_fluxes.xlsx',col_names=T,1)
+options(digits = 5)
+df2$POC_mgCm2d <- as.numeric(df2$POC_mgCm2d)
+df2$POC_mgCm2d_low <- as.numeric(df2$POC_mgCm2d_low)
+df2$POC_mgCm2d_upp <- as.numeric(df2$POC_mgCm2d_upp)
+
+df <- merge(df,df2,by=c("Site","Depth"),all=T)
+df$Depth <- df$Depth * -1 # make depth positive numeral
+df <- df[-c(4,5,9)] # remove unnecessary
+
+df$`POC (mmol m^3)` <- df$POC_mgCm3 / 12.011 # calculate carbon concentration
+df <- df[order(df[,1], df[,2]),] # rearrange dataframe
+
+df$`Longitude (°E)` <- -40.1
+df$`Latitude (°N)` <- -52.4
+
+#  (P3A: 15–22 November; P3B: 29th November–5th December; P3C: 9–15 December)
+# x <- with(df, ymd("2017-11-15") + hms("00:30:00"))
+# df$DateTimeStart[df$Site=="P3A"] <- as.POSIXct(as.numeric(x))
+# 
+# df <- df %>% filter(df, df$Site=="P3A") %>%
+#   mutate(DateTimeStart = x)
+
+# df$DateTimeStart[df$Site=="P3A"] <- as.POSIXct(strptime("2017-11-15 00:30:00", "%Y-%m-%d %H:%M:%S"),"UTC")
+# df$DateTimeEnd[df$Site=="P3A"] <- as.POSIXct(strptime("2017-11-22 23:30:00", "%Y-%m-%d %H:%M:%S"),"UTC")
+# df$DateTimeStart[df$Site=="P3B"] <- as.POSIXct(strptime("2017-11-29 00:30:00", "%Y-%m-%d %H:%M:%S"),"UTC")
+# df$DateTimeEnd[df$Site=="P3B"] <- as.POSIXct(strptime("2017-12-05 23:30:00", "%Y-%m-%d %H:%M:%S"),"UTC")
+# df$DateTimeStart[df$Site=="P3C"] <- as.POSIXct(strptime("2017-12-09 00:30:00", "%Y-%m-%d %H:%M:%S"),"UTC")
+# df$DateTimeEnd[df$Site=="P3C"] <- as.POSIXct(strptime("2017-12-15 23:30:00", "%Y-%m-%d %H:%M:%S"),"UTC")
+
+sites<-c("P3A","P3B","P3C")
+df2<-vector()
+time_strings <- c("2017-11-15 00:30:00", "2017-11-22 23:30:00", "2017-11-29 00:30:00", "2017-12-05 23:30:00", "2017-12-09 00:30:00", "2017-12-15 23:30:00")
+counter <- 0
+for (i in sites) {
+  out_df<-filter(df, Site==i)
+  for (j in 1:length(1:2)) {
+    counter <- counter +1
+    x <- str_replace(time_strings[counter]," ", "T")
+    if (j==1) {out_df$DateTimeStart <- x}
+    if (j==2) {out_df$DateTimeEnd <- x}
+  }
+  df2<-rbind(df2,out_df)
+}
+
+df <- read.csv("data/Sari_POC_data/POC_net_change.csv")
+df <- merge(df,df2,by=c("Site","Depth"),all=T)
+
+df<-df[c(1,9:12,2,8,5:7,3)]
+
+data2 <- df
+
+# clean-up
+rm(df,df2)
+
+colnames(data2) <- c("Site","Longitude (°E)","Latitude (°N)",
+                     "DateTimeStart","DateTimeEnd", "Depth (m)",
+                     "POC (mmol m^-3)",
+                     "POC flux mid (mg C m^-2 d^-1)","POC flux lower (mg C m^-2 d^-1)",
+                     "POC flux upper (mg C m^-2 d^-1)",
+                     "Change in POC (mg C m^-3 d^-1)")
+
+write.table(data2, 
+            file = "./for_pangaea/data2_POC_concentration_flux.txt", 
+            row.names = F, 
+            col.names = T, 
+            quote = F, 
+            sep = '\t')
+  
+```
+
+```{r plot POC}
+knitr::opts_chunk$set(fig.width=9, fig.height=4)
+# plot POC
+plot_POC <- list()
+data2<-data2[order(data2$`Depth (m)`),]
+plot_counter <-0
+
+for (i in c(1:3)) {
+  # POC concentration
+  if (i==1) {
+    pl <- plot_style +
+      geom_path(data=data2, aes(x=`POC (mmol m^-3)`, y=`Depth (m)`, color=Site), size=1.2) +
+      scale_y_reverse(expand = c(0,0),limits=c(1000,0)) +
+      labs(x=expression(paste("POC (mmol ",m^3,")")),y=expression(paste("Depth (m)"))) +
+      scale_x_continuous(position = "top")
+  }
+  # POC flux
+  if (i==2) {
+    pl <- plot_style +
+      geom_ribbon(data=data2,aes(xmin=`POC flux lower (mg C m^-2 d^-1)`,
+                                 xmax=`POC flux upper (mg C m^-2 d^-1)`,
+                                 y=`Depth (m)`,color=Site), alpha=0.05) +
+      geom_path(data=data2, aes(x=`POC flux mid (mg C m^-2 d^-1)`, y=`Depth (m)`, color=Site), size=1.2) +
+      scale_y_reverse(expand = c(0,0),limits=c(1000,0)) +
+      labs(x=expression(paste("POC flux (mg C ", m^-2, " ", d^-1,")")),y=expression(paste("Depth (m)"))) +
+      scale_x_continuous(position = "top")
+  }
+  # POC change
+  if (i==3) {
+    pl <- plot_style +
+      geom_path(data=data2, aes(x=`Change in POC (mg C m^-3 d^-1)`, y=`Depth (m)`, color=Site), size=1.2) +
+      geom_vline(xintercept = 0,linetype="dashed") +
+      scale_y_reverse(expand = c(0,0),limits=c(1000,0)) +
+      labs(x=expression(paste("Change in POC (mg C ", m^-3, " ", d^-1, ")")),y=expression(paste("Depth (m)"))) +
+      scale_x_continuous(position = "top",limits=c(-5.5,5.5))
+  }
+  plot_counter <- plot_counter+1
+  plot_POC[[plot_counter]]<-pl
+}
+
+plots_POC <- ggarrange(plot_POC[[1]],plot_POC[[2]],plot_POC[[3]],
+                      common.legend = T,nrow=1,ncol=3,
+                      legend="bottom",
+                      labels=c("a","b","c"))
+
+plots_POC
+
+
+# clean-up
+rm(plot_counter,plot_POC,pl,plots_POC)
+
+```
+
+
+
+### ADCP Acoustic data
+This section imports raw data sent by Sophie Fielding who lost the code she used to create figures in Cook et al. (2023). I recreated the plots in Cook et al. (2023) by:
+- determined whether data is day or night
+- removed any values below -100 decibels
+- smoothed Sv_mean data into 10 metre depth bins using spline with 10 degrees of freedom
+```{r acoustic data: import and arrange}
+sites <- c("P3A","P3B")
+frequencies <- c("18","38","70","120","200")
+
+df <- vector()
+counter <- 0
+dir <- "./data/ADCP_Fielding"
+
+for (j in sites) {
+  file_dir <- file.path(dir, j, "/")
+  for (f in frequencies) {
+    if (f=="18"|f=="38") {y_new<-seq(5,995,10)}
+    if (f=="70") {y_new<-seq(5,795,10)}
+    if (f=="120") {y_new<-seq(5,495,10)}
+    if (f=="200") {y_new<-seq(5,295,10)}
+    file_str <- paste0("*_",f,"*_10min*")
+    file_list <- Sys.glob(file.path(file_dir, file_str))
+    out_df <- vector()
+    counter<-0
+    dat<-vector()
+    for (i in file_list){
+      counter <- counter + 1
+      file_name <- i
+      out_df <- read.csv(file_name, header = T)
+      # out_df <- out_df %>% mutate_all(na_if,"")
+      out_df <- out_df %>% replace_with_na(replace = list(Sv_mean = "")) # previous line replaced with this
+      out_df$counter <- counter
+      out_df$t <- as.integer(substring(out_df$Time_M, 2,3)) 
+      out_df$`d/n`[out_df$t>=7 & out_df$t<=21] <- "d"
+      out_df$`d/n`[out_df$t>=23 | out_df$t<=5] <- "n"
+      dat <- rbind(dat, out_df)
+    }
+    dat<-subset(dat,Sv_mean>=-100)
+    dat<-dat[!is.na(dat$`d/n`),]
+    dat$Sv_min[dat$Sv_min<=-100] <-NA
+    dat$Sv_max[dat$Sv_max<=-100] <-NA
+
+    dat_s <- split(dat, dat$`d/n`)
+    
+    # night
+    dat_n <- dat_s[["n"]]
+    f_n <- smooth.spline(dat_n$Depth_mean, dat_n$Sv_mean, df = 10)
+    x_n <- data.frame(predict(f_n, y_new, deriv=0))
+    x_n$t <- "n"
+    
+    # day
+    dat_d <- dat_s[["d"]]
+    f_d <- smooth.spline(dat_d$Depth_mean, dat_d$Sv_mean, df = 10)
+    x_d <- data.frame(predict(f_d, y_new, deriv=0))
+    x_d$t <- "d"
+    
+    x_d<-rbind(x_d,x_n) # merge night and day
+    colnames(x_d) <- c("Depth","Sv","d/n")
+    x_d$f <- f
+    x_d$Site <- j
+    
+    if (f=="18") {df1<-x_d}
+    else {df1<-rbind(df1,x_d)}    
+    
+  }
+  if (j=="P3A") {df<-df1}
+  else {df<-rbind(df,df1)}
+}
+
+df$`Longitude (°E)` <- -40.1
+df$`Latitude (°N)` <- -52.4
+
+sites<-c("P3A","P3B")
+df2<-vector()
+time_strings <- c("2017-11-15 00:30:00", "2017-11-22 23:30:00", "2017-11-29 00:30:00", "2017-12-05 23:30:00", "2017-12-09 00:30:00", "2017-12-15 23:30:00")
+counter <- 0
+for (i in sites) {
+  out_df<-filter(df, Site==i)
+  for (j in 1:length(1:2)) {
+    counter <- counter +1
+    x <- str_replace(time_strings[counter]," ", "T")
+    if (j==1) {out_df$DateTimeStart <- x}
+    if (j==2) {out_df$DateTimeEnd <- x}
+  }
+  df2<-rbind(df2,out_df)
+}
+
+data5 <- df2[,c(6,7,5,8,9,4,3,1,2)]
+colnames(data5) <- c("Longitude (°E)","Latitude (°N)","Site","DateTimeStart","DateTimeEnd",
+                     "Frequency (kHz)", "Day/Night", "Depth (m)", "Sv backscatter (db)")
+
+# clean-up
+rm(dat,df,df1,out_df,counter,dir,f,dat_d,dat_f,dat_n,dat_s,df2,f_d,f_n,x_d,x_n,time_strings,x,
+   file_dir,file_list,file_name,file_str,frequencies,i,j,sites,y_new)
+
+write.table(data5, 
+            file = "./for_pangaea/data5_acoustic_backscatter.txt", 
+            row.names = F, 
+            col.names = T, 
+            quote = F, 
+            sep = '\t')
+
+```
+
+```{r plot ADCP data}
+knitr::opts_chunk$set(fig.width=9, fig.height=4)
+# # not currently operational as I have rearranged into Data5 and not adjusted the plotting code to match.
+# # I will update if required by PANGAEA or paper reviewers.
+# # plot ADCP
+# plot_ADCP <- list()
+# sites <- c("P3A","P3B")
+# variables <- colnames(data2[12:21])
+# is.even <- function(x) x %% 2 == 0
+# plot_counter<-0
+# mi = -100
+# ma = -60
+# 
+# for (i in sites) {
+#   for (j in 1:length(variables)) {
+#     if (is.even(j)==T) {next}
+#     else {
+#   
+#       d <- variables[j]
+#       n <- variables[j+1]
+#       sub <- subset(data2, Site == i)
+#       sub$d <- sub[[d]]
+#       sub$n <- sub[[n]]
+#       sub<-sub[order(sub$Depth),]
+#       sub<-sub[!is.na(sub$d),]
+#       upper<-max(sub$Depth)+5
+#       
+#       if (is.element(j, c(1,3,5))) {st <- substring(d,9,14)}
+#       else {st<-substring(d,9,15)}
+#       
+#       pl <- plot_style +
+#         geom_path(data=sub, aes(x=n, y=Depth), color="blue", size=1.2) +
+#         geom_path(data=sub, aes(x=d, y=Depth), color="red", size=1.2) +
+#         scale_y_reverse(expand = c(0,0),limits=c(upper,0)) +
+#         labs(x=expression(paste("Sv (db)")),y=expression(paste("Depth (m)")),
+#              subtitle=st, colour="d/n") +
+#         scale_x_continuous(position = "top",limits=c(mi,ma))
+#       
+#       plot_counter <- plot_counter+1
+#       plot_ADCP[[plot_counter]] <- pl
+#       
+#     }
+#     
+#   }
+#   if (i=="P3A") {
+#     plot <- ggarrange(plot_ADCP[[1]],plot_ADCP[[2]],plot_ADCP[[3]],plot_ADCP[[4]],plot_ADCP[[5]],
+#                       nrow=2,ncol=3,common.legend=T,
+#                       labels=c("a","b","c","d","e"))
+#   }
+#   if (i=="P3B") {
+#     plot <- ggarrange(plot_ADCP[[6]],plot_ADCP[[7]],plot_ADCP[[8]],plot_ADCP[[9]],plot_ADCP[[10]],
+#                       nrow=2,ncol=3,common.legend=T,
+#                       labels=c("a","b","c","d","e"))
+#   }
+#   print(plot)
+# }
+# 
+# # clean-up
+# rm(plot_ADCP,sites,variables,is.even,plot_counter,mi,ma,d,n,sub,upper,pl,plot,st,i,j)
+
+```
+```{r plot ADCP for publication}
+# # Have removed because I have split acoustic backscatter data from high-frequency POC data and reformatted backscatter data. 
+# # I will rewrite code to produce the same plot if reviewers require this.
+# # create blank plot for P3C
+# sites <- c("P3A","P3B")
+# f<-"38"
+# plots <- list()
+# counter<-0
+# 
+# for (j in sites) {
+#   counter<-counter+1
+#   sub <- filter(data2, Site==j)
+#   sub$z<-sub$Depth
+#   sub$d<-sub$`Sv mean 38 kHz (db); day`
+#   sub$n<-sub$`Sv mean 38 kHz (db); night`
+#   
+#   pl <- plot_style +
+#     
+#     geom_path(data=sub, aes(x=n, y=z), color="blue", size=1.2) +
+#     geom_path(data=sub, aes(x=d, y=z), color="red", size=1.2) +
+#     scale_y_reverse(expand = c(0,0),limits=c(1000,0)) +
+#     labs(x=expression(paste("Sv 38 kHz (db)")),y=expression(paste("Depth (m)"))) +
+#     scale_x_continuous(position = "top",limits=c(-100,-60))
+#   
+#   plots[[counter]] <- pl
+# 
+#   
+# } 
+# 
+# plot_adcpC <- plot_style +
+#     
+#     labs(x=expression(paste("Sv 38 kHz (db)")),y=expression(paste("Depth (m)"))) +
+#     scale_x_continuous(position = "top",limits=c(-100,-60)) + 
+#     scale_y_reverse(expand = c(0,0), limits = c(1000, 0)) +
+#     annotate("text", label="No data", x=-80, y=500, size=5)
+# 
+# plot<-ggarrange(t1,t2,t3,plots[[1]],plots[[2]],plot_adcpC,
+#           ncol=3, nrow=2, common.legend=T,
+#           heights = c(0.05, 0.95))
+# 
+# 
+# plot
+# 
+# ggsave("./plots/20230523_acoustic_38_kHz.png", units="in", width=6, height=2.5, dpi=300)
+# 
+# rm(pl,plot,plot_adcpC,plots,sub,sites,f,j,counter)
+
+```
+
+
+
+
+
+## Data4: Zooplankton and micronekton biomass, respiration and ingestion
+Data taken from Cook et al. (2023) and unchanged
+```{r import and arrange data from Cook et al. (in press) figures 2, 5 and 7}
+files <- c("DY086_C_biomass_mmol_m3_fig2.csv", "DY086_C_resp_mmol_m3_d_fig5.csv", "DY086_C_ing_mmol_m3_d_fig7.csv")
+counter<-0
+
+for (i in files) {
+  counter <- counter +1 
+  f <- file.path("./data/CookK_rates/", i)
+  out_df <- read.csv(f)
+  if (counter == 1) {df<-out_df}
+  else {df <- merge(df, out_df, by=c("Net", "Depth..m.","night..n...day..d.", "Stn"), all=T)}
+}
+
+# split the depth range column into min and max depths
+depths <- strsplit(as.character(df$Depth..m.), '-', fixed=TRUE)
+Depth_min <- vector()
+Depth_max <- vector()
+for (j in 1:(length(depths))) {
+  x1 <- depths[[j]][1]
+  x2 <- depths[[j]][2]
+  Depth_min <- rbind(Depth_min, x1)
+  Depth_max <- rbind(Depth_max, x2)
+}
+df$`Depth min` <- as.numeric(Depth_min[,1])
+df$`Depth max` <- as.numeric(Depth_max[,1])
+df$`Depth med` <- (df$`Depth min`+df$`Depth max`)/2
+colnames(df) <- c("Net", "Depth range (m)", "D/N", "Site", 
+                  "Biomass (mmol C m^-3)", "Respiration (mmol C m^-3 d^-1)", "Ingestion (mmol C m^-3 d^-1)",
+                  "Depth min (m)", "Depth max (m)", "Depth median (m)")
+df$`Mesh size (μm)`[df$Net == "Bongo"] <- 100
+df$`Mesh size (μm)`[df$Net == "MOCNESS"] <- 330
+df$`Mesh size (μm)`[df$Net == "RMT"] <- 4000
+
+df$`Longitude (°E)` <- -40.1
+df$`Latitude (°N)` <- -52.4
+
+# include start and end times for net deployments
+counter <- 0
+sites <- c("P3A", "P3B", "P3C")
+nets <- c("Bongo","MOCNESS","RMT")
+df$DateTimeStart <- NA
+df$DateTimeEnd <- NA
+datetimes <- c("2017-11-16T06:35:00", "2017-11-20T12:52:00", # bongo P3A
+               "2017-11-30T17:38:00", "2017-12-05T03:15:00", # bongo P3B
+               "2017-12-09T12:05:00", "2017-12-12T18:04:00", # bongo P3C
+               "2017-11-16T00:40:00", "2017-11-20T19:40:00", # MOCNESS P3A
+               "2017-12-01T17:43:00", "2017-12-04T12:38:00", # MOCNESS P3B
+               "2017-12-10T23:00:00", "2017-12-11T15:34:00", # MOCNESS P3C
+               "2017-11-16T22:56:00", "2017-11-17T17:20:00", # RMT P3A
+               "2017-11-29T17:30:00", "2017-11-30T01:20:00", # RMT P3B
+               "2017-12-10T01:07:00", "2017-12-10T15:25:00") # RMT P3C
+
+for (i in sites) {
+  for (j in nets) {
+    counter = counter + 1
+    df$DateTimeStart[df$Site == i & df$Net == j] <- datetimes[counter]
+    counter = counter + 1
+    df$DateTimeEnd[df$Site == i & df$Net == j] <- datetimes[counter]    
+  }
+}
+
+
+df<-df[c(12,13,4,14,15,1,3,11,2,10,8,9,5,6,7)]
+
+data4 <- df
+
+# clean_up
+rm(files,counter,f,df,out_df,depths,Depth_min,Depth_max,x1,x2,i,j)
+
+write.table(data4, 
+            file = "./for_pangaea/data4_biomass.txt", 
+            row.names = F, 
+            col.names = T, 
+            quote = F, 
+            sep = '\t')
+
+
+```
+
+```{r create biomass plots}
+library(R.utils)
+sites <- sort(unique(data4$Site))
+nets <- sort(unique(data4$Net))
+cycle <- c("n","d")
+
+plot_list <- list()
+counter<-0
+
+new_bongo<-subset(data4,Net=="Bongo")
+new_bongo$`D/N` <- "n"
+new_bongo[10:12] <-NA
+suball<-merge(data4,new_bongo,all=T)
+suball<-suball[order(suball$Site ,suball$Net, suball$`Depth median (m)`),]
+# convert depth to a factor so that the order of the depth ranges remains correct when plotting
+suball$Depth<- factor(suball$`Depth range (m)`, levels=c("0-150","150-350","0-250","250-500",
+                                           "0-62","62-125","125-187","187-250",
+                                           "250-312","312-375","375-437","437-500"))
+
+for (j in nets) {
+  # filter net-specific data so calculate x-axis maximum value
+  # then define number of decimals for x-axis
+  subnet <- filter(suball, Net==j)
+  ma <- max(subnet$`Biomass (mmol C m^-3)`,na.rm=T)
+  tik <- c(0,0.05,0.1)
+  if (j=="Bongo") {
+    dec<-0.01
+    tik <- c(0,0.05,0.1)
+    ma <- ma+(ma/100*15)}
+  if (j=="MOCNESS") {
+    dec <-1
+    tik <- c(0,10,20,30,40)
+    ma <- ma+(ma/100*10)}
+  if (j=="RMT") {
+    dec<-0.01
+    tik <- c(0,0.1)
+    ma <- ma+(ma/100*30)}
+  for (i in sites) {
+    for (k in cycle) {
+      # must filter by site here so that it is reset for day values
+      sub <- filter(subnet, Site==i)
+      
+      ## there is no data for MOCNESS P3A so skip entirely
+      if (isZero(sum(sub$`Biomass (mmol C m^-3)`,na.rm=T)) == T) {
+        print(paste(j,i,k,"zero data command"))
+        next
+      }
+      # build empty plot for night-time bongo so y-axis have values
+      # this happens before filtering by D/N as data is all night data is NA
+      if (j=="Bongo" & k=="n") {
+          pl<- ggplot(subset(sub,`D/N` %in% c("n"))) +
+                # my style
+                theme_bw() +
+                theme(plot.background = element_blank(),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                axis.title.x=element_blank(),
+                # axis.text.y=element_blank(), #remove x axis labels, ticks and title
+                # axis.ticks.y=element_blank(),
+                # axis.title.y=element_blank(),
+                legend.text = element_text(size=7),
+                legend.title = element_blank(),
+                legend.position = "bottom",
+                legend.box = "horizontal",
+                legend.key.size = unit(0.3, 'cm'),
+                axis.text = element_text(size = 7),
+                axis.title = element_text(size=10),
+                axis.line = element_line(color = 'black', size=1.2),
+                axis.ticks = element_line(size=1.2)) +
+                scale_y_discrete(limits=rev) + 
+                scale_x_reverse(position = "top",
+                                expand = c(0,0),
+                                limits=c(ma,0),
+                                breaks=tik) +
+                labs(y=expression(paste("Depth (m)"))) +
+                annotate("text", label="No data", size=5,hjust="center",vjust="center") +
+                geom_point(aes(x=`Biomass (mmol C m^-3)`,y=Depth))
+      }
+      
+      # filter by cycle
+      sub <- filter(sub, `D/N`==k)
+      # else {
+      if (k=="n" & j=="RMT") {
+
+        st<-"Night"
+          pl <- plot_style +
+            theme(#axis.text.y=element_blank(), #remove x axis labels, ticks and title
+                  # axis.ticks.y=element_blank(),
+                  # axis.title.y=element_blank(),
+                  axis.title.x=element_blank()) +
+            labs(y=expression(paste("Depth (m)"))) +
+            geom_bar(data=sub, stat='identity', aes(x=`Biomass (mmol C m^-3)`, y=Depth),fill="blue") + #,colour="black") +
+            scale_y_discrete(limits=rev) +
+            scale_x_reverse(position = "top",
+                            expand = c(0,0),
+                            limits=c(ma,0),
+                            breaks=tik)
+        
+      }
+      if (k=="n" & j=="MOCNESS") {
+
+        st<-"Night"
+          pl <- plot_style +
+            theme(#axis.text.y=element_blank(), #remove x axis labels, ticks and title
+                  # axis.ticks.y=element_blank(),
+                  # axis.title.y=element_blank(),
+                  axis.title.x=element_blank()) +
+            labs(y=expression(paste("Depth (m)"))) +
+            geom_bar(data=sub, stat='identity', aes(x=`Biomass (mmol C m^-3)`, y=Depth),fill="blue") + #,colour="black") +
+            scale_y_discrete(limits=rev) +
+            scale_x_reverse(position = "top",
+                            expand = c(0,0),
+                            limits=c(ma,0),
+                            breaks=tik)
+        
+      }        
+      if (k=="d") {
+          st<-"Day"
+          pl <- ggplot() +
+            # my style
+            theme_bw() +
+            theme(plot.background = element_blank(),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            legend.text = element_text(size=7),
+            legend.title = element_blank(),
+            legend.position = "bottom",
+            legend.box = "horizontal",
+            legend.key.size = unit(0.3, 'cm'),
+            axis.text = element_text(size = 7),
+            axis.title = element_text(size=10),
+            axis.line.y = element_line(color = 'black', size=0.3),
+            axis.line.x = element_line(color = 'black', size=1.2),
+            axis.ticks = element_line(size=1.2),
+          
+            axis.text.y=element_blank(), #remove x axis labels, ticks and title
+            axis.ticks.y=element_blank(),
+            axis.title.y=element_blank(),
+            axis.title.x=element_blank()) +
+            
+            geom_bar(data=sub, stat='identity', aes(x=`Biomass (mmol C m^-3)`, y=Depth),fill="red") + #,colour="black") +
+            scale_y_discrete(limits=rev) +
+            scale_x_continuous(position="top",
+                               expand=c(0,0),
+                               limits=c(0,ma),
+                               breaks=tik)
+        }
+
+        
+      # }
+      counter<-counter+1
+      plot_list[[counter]] <- pl
+      print(paste(j,i,k,"last command" ))
+    }
+  }
+}
+
+rm(suball,sub,subnet,st,ma,sites,nets,counter,cycle,i,j,k,new_bongo,dec,tik)
+
+```
+
+```{r arrange plots for publication}
+
+t1 <- ggplot() + geom_text(aes(x=0, y=0, label = "P3A"),parse = TRUE, size = 4, hjust = 0.51) + theme_void()
+t2 <- ggplot() + geom_text(aes(x=0, y=0, label = "P3B"),parse = TRUE, size = 4, hjust = 0.51) + theme_void()
+t3 <- ggplot() + geom_text(aes(x=0, y=0, label = "P3C"),parse = TRUE, size = 4, hjust = 0.5) + theme_void()
+
+
+h1 <- ggplot() + theme_void() +
+  theme(plot.title = element_text(hjust = 1.1,size=10),
+        plot.subtitle = element_text(hjust = 3,size=8)) +
+  labs(title=expression(paste("Bongo")),
+       subtitle=expression(paste("Biomass (mmol C ", m^-3, ")")))
+
+h2 <- ggplot() + theme_void() +
+  theme(plot.title = element_text(hjust = 1.4,vjust=-24,size=10),
+        plot.subtitle = element_text(hjust = 3,vjust=-30,size=8)) +
+  labs(title=expression(paste("MOCNESS")),
+       subtitle=expression(paste("Biomass (mmol C ", m^-3, ")")))
+
+h3 <- ggplot() + theme_void() +
+  theme(plot.title = element_text(hjust = 1.05,size=10),
+        plot.subtitle = element_text(hjust = 3,size=8)) +
+  labs(title=expression(paste("RMT")),
+       subtitle=expression(paste("Biomass (mmol C ", m^-3, ")")))
+
+
+
+plot <- ggarrange(NULL,
+                  h1,NULL,NULL,
+                  NULL,NULL,NULL,
+                  h3,NULL,NULL,
+                  
+                  t1,
+                  plot_list[[1]],NULL,plot_list[[2]], # Bongo P3A
+                  h2,NULL,NULL, # MOCNESS P3A
+                  plot_list[[11]],NULL,plot_list[[12]], # RMT P3A
+                  
+                  t2,
+                  plot_list[[3]],NULL,plot_list[[4]], # Bongo P3B
+                  plot_list[[7]],NULL,plot_list[[8]], # MOCNESS P3B
+                  plot_list[[13]],NULL,plot_list[[14]], # RMT P3B
+                  
+                  t3,
+                  plot_list[[5]],NULL,plot_list[[6]], # Bongo P3C
+                  plot_list[[9]],NULL,plot_list[[10]], # MOCNESS P3C
+                  plot_list[[15]],NULL,plot_list[[16]], # RMT P3C
+                  
+                  nrow=4,ncol=10,
+                  widths=c(0.3,1.5,-0.22,0.87,1.5,-0.22,0.87,1.5,-0.22,0.87),
+                  heights=c(0.4,1,1,1,1),
+                  labels=c("","","","","","","","","","", # 1-10 are labels
+                           "","a","","", #4
+                           "","","", #3
+                           "b","","", #3
+                           "","c","","", #4
+                           "d","","", #3
+                           "e","","", #3
+                           "","f","","", #4
+                           "g","","", #3
+                           "h","","" #3
+                           )
+                  )
+
+plot
+
+ggsave("./plots/20230607_biomass_nets_plot.png", units="in", width=6, height=4, dpi=300)
+
+rm(h1,h2,h3,pl,plot,plot_list)
+
+```
+
+
+
+## Data_met: Meteorological data from surfmet taken from BODC
+```{r surfmet data}
+dir <- "./data/surfmet/"
+file <- dir("./data/surfmet/")[grep(".csv", dir("./data/surfmet/"))]
+df <- read.csv(paste0(dir,file), header=T, skip=25)
+
+df<-df[,c(4,5,6,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42),]
+colnames(df)[1:3] <- c("DateTime", "Longitude (°E)", "Latitude (°N)")
+df$Date<-substring(df$DateTime,1,10)
+dates<-unique(substring(data1$DateTime,1,10))
+data_met <- df[df$Date %in% dates,]
+data_met <- data_met[-19]
+data_met<-subset(data_met, `Latitude (°N)` > -52.9)
+data_met<-subset(data_met, `Longitude (°E)` > -41)
+
+# remove unwanted variables
+data_met<-data_met[,-c(9:12,15:18),]
+
+colnames(data_met) <- c("DateTime","Longitude (°E)","Latitude (°N)","Air Pressure (mBar)","Air Temperature (degC)",
+                        "Air Humidity (%)","Port Solar (W m^-2)","Starboard Solar (W m^-2)","Port Surface PAR (W m^-2)", "Starboard Surface PAR (W m^-2)")     
+
+
+# clean-up
+rm(df,dates,dir,file)
+
+write.table(data_met, 
+            file = "./for_pangaea/data_met.txt", 
+            row.names = F, 
+            col.names = T, 
+            quote = F, 
+            sep = '\t')
+
+```
+
+
+
+## Background & Summary plot creation
+```{r}
+# primary productivity plot
+#####
+df<-read.csv("./data/PP4Will.csv", sep="\t")
+
+df$Date <- as.Date(df$Days.since.1st.January.2017,
+                   origin = as.Date("2017-01-01"))
+
+df<-subset(df, Date<"2017-12-31")
+
+# # calculate site-average PP
+# df$Site[df$Date >= "2017-11-15" & df$Date <= "2017-11-22"] <- "P3A"
+# df$Site[df$Date >= "2017-11-29" & df$Date <= "2017-12-05"] <- "P3B"
+# df$Site[df$Date >= "2017-12-09" & df$Date <= "2017-12-15"] <- "P3C"
+# 
+# sub <- filter(df, Site=="P3C")
+# mean(sub$PP..mgCm.2d.1)
+
+# PP is in mg C m^2, d^-1
+colnames(df) <- c("JDay", "PP", "Date")
+
+# make dataframe for each site date range
+s1<-data.frame(xmin = as.Date("2017-11-15", "%Y-%m-%d"),
+               xmax = as.Date("2017-11-22", "%Y-%m-%d"),
+               ymin = -Inf,
+               ymax = Inf)
+
+s2<-data.frame(xmin = as.Date("2017-11-29", "%Y-%m-%d"),
+               xmax = as.Date("2017-12-05", "%Y-%m-%d"),
+               ymin = -Inf,
+               ymax = Inf)
+
+s3<-data.frame(xmin = as.Date("2017-12-09", "%Y-%m-%d"),
+               xmax = as.Date("2017-12-15", "%Y-%m-%d"),
+               ymin = -Inf,
+               ymax = Inf)
+
+ggplot() +
+  # my style
+  theme_bw() +
+  theme(plot.background = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  legend.text = element_text(size=7),
+  legend.title = element_blank(),
+  legend.position = "bottom",
+  legend.box = "horizontal",
+  legend.key.size = unit(0.3, 'cm'),
+  axis.text = element_text(size = 8),
+  axis.title = element_text(size=10),
+  axis.line = element_line(color = 'black', size=1.2),
+  axis.ticks = element_line(size=1.2)) +
+  
+  geom_rect(data = s1, fill = "grey", alpha = 0.5,
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax)) +  
+  
+  geom_rect(data = s2, fill = "grey", alpha = 0.5,
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax)) +  
+  
+  geom_rect(data = s3, fill = "grey", alpha = 0.5,
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax)) +    
+
+  geom_line(data=df,aes(x=Date,y=PP),size=2) +
+  scale_x_date(expand=c(0,0)) +
+  labs(x="Date in 2017",y=expression(paste("Primary Production (mg C ", m^-2," ", d^-1, ")"))) +
+  
+  geom_text(aes(x=as.Date("2017-11-20"), y=800, label = "P3A"),parse = TRUE, size = 4,hjust=0.96) +
+  geom_text(aes(x=as.Date("2017-12-03"), y=800, label = "P3B"),parse = TRUE, size = 4,hjust=0.76) +
+  geom_text(aes(x=as.Date("2017-12-13"), y=800, label = "P3C"),parse = TRUE, size = 4,hjust=0.76) 
+
+  
+ggsave("plots/20230628_PPplot.tiff", units="in", width=6, height=3, dpi=300, compression = 'lzw')
+
+
+```
